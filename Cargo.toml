@@ -1,0 +1,35 @@
+[package]
+name = "LittleTuffTracker"
+version = "0.1.0"
+edition = "2024"
+authors = ["Devin Little <devinlittlee@gmail.com>"]
+repository = "https://git.home.devinlittle.net/devin/LittleTuffTracker"
+license = "AGPL-3.0-only"
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["full", "bytes"]}
+axum = "0.8.9"
+utoipa = "6.0.0"
+utoipa-scalar = "0.4.0"
+
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+
+serde = { version = "1.0.229", features = ["derive"]}
+serde_json = { version = "1.0.151" }
+bendy = { version = "0.6.1", features = ["serde"]}
+bytes = { version = "1.12.1", features = ["serde"]}
+strum = { version = "0.28.0", features = ["derive"] }
+
+rand = "0.10.3"
+
+dotenvy = "0.15.7"
+toml = "1.1.8"
+
+dashmap = "6.2.1"
+
+tracing = "0.1.44"
+tracing-subscriber = {version = "0.3.23", features = ["env-filter", "json"] }
+tracing-appender = "0.2.5"
+
+# clap?

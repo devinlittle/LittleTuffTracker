@@ -1,0 +1,15 @@
+# Build Artifacts
+/target/
+*.log*
+*.env*
+
+# OS Specific
+.DS_STORE
+
+# Rust Stuff
+**/*.rs.bk
+
+# Editor Specific
+*.swp
+*.swo
+*~

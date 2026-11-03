@@ -1,0 +1,235 @@
+use bytes::{Bytes, BytesMut};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
+use tokio::{net::UdpSocket, time::Instant};
+use tracing::{error, info, trace};
+
+use crate::structs::{
+    AppState,
+    Event::{self, *},
+    InfoHash, Peer, PeerId, UdpAction, UdpResponse,
+};
+
+pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> anyhow::Result<()> {
+    let udp_socket = UdpSocket::bind(host_on).await.map_err(|e| {
+        let error = format!("Error Binding to UDP Socket: {:?}", e);
+        error!(error);
+        anyhow::anyhow!(error)
+    })?;
+
+    info!("Listening UDP Tracker on: {}", host_on);
+
+    loop {
+        let mut buf_mut = BytesMut::with_capacity(2048); // or 1024
+
+        let (buf_size, remote_socket) = udp_socket.recv_buf_from(&mut buf_mut).await?;
+
+        let response = handle_request(
+            buf_mut.clone().freeze(),
+            buf_size,
+            remote_socket,
+            &app_state,
+        )
+        .await?;
+
+        buf_mut.clear();
+        buf_mut.extend_from_slice(&response.to_bytes());
+        udp_socket.send_to(&buf_mut, remote_socket).await?;
+    }
+}
+
+pub async fn handle_request(
+    buffer: Bytes,
+    buf_size: usize,
+    remote_socket: SocketAddr,
+    app_state: &Arc<AppState>,
+) -> anyhow::Result<UdpResponse> {
+    let Ok(action) = UdpAction::try_from(u32::from_be_bytes(buffer[8..12].try_into()?))  else {
+        // TODO: return error
+        todo!()
+    };
+
+    let transaction_id = u32::from_be_bytes(buffer[12..16].try_into()?);
+
+    match action {
+        UdpAction::Connect => {
+            if buf_size < 16 {
+                // TODO: return error
+                todo!();
+            }
+
+            let connection_id = call_gen_connection_id(app_state);
+
+            app_state.connections.insert(
+                connection_id,
+                (remote_socket, { Instant::now() + Duration::from_secs(190) }),
+            );
+
+            let response = UdpResponse::Connect {
+                transaction_id,
+                connection_id,
+            };
+
+            trace!("Sent response {:?}", response);
+
+            Ok(response)
+        }
+        UdpAction::Announce => {
+            if buf_size < 20 {
+                // TODO: return error
+                todo!();
+            }
+
+            let Ok(info_hash): Result<InfoHash, _> = buffer[16..36]
+                .try_into() else {panic!("");};
+
+            let Ok(peer_id): Result<PeerId, _> = buffer[36..56]
+                .try_into() else {panic!("");};
+
+            let downloaded = u64::from_be_bytes(buffer[56..64].try_into()?);
+            let left = u64::from_be_bytes(buffer[64..72].try_into()?);
+            let uploaded = u64::from_be_bytes(buffer[72..80].try_into()?);
+
+            let Ok(event) = Event::try_from(u32::from_be_bytes(buffer[80..84].try_into()?)) else {
+                // TODO: error here
+                todo!();
+            };
+
+            let ip_bytes = u32::from_be_bytes(buffer[84..88].try_into()?);
+            let ip = if ip_bytes == 0 {
+                remote_socket.ip()
+            } else {
+                IpAddr::V4(Ipv4Addr::from_bits(ip_bytes))
+            };
+
+            let port = u16::from_be_bytes(buffer[96..98].try_into()?);
+
+            // TODO: handle numwant
+
+            let peer = Peer {
+                peer_id,
+                ip,
+                port,
+                uploaded,
+                downloaded,
+                left,
+                last_announce: Instant::now(),
+            };
+
+            let info_hash_stuff = app_state.info_hashes.entry(info_hash).or_default();
+
+            let mut peer_list: Vec<Peer> = Vec::new();
+
+            match event {
+                None => {
+                    info_hash_stuff.peers.insert(peer_id, peer);
+
+                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                        .peers
+                        .iter()
+                        .filter(|entry| {
+                            let list_peer_id = entry.peer_id;
+                            list_peer_id != peer_id
+                        })
+                        .map(|entry| entry.value().clone())
+                        .take(20 as usize) // replace 20 as NUMWANT
+                        .collect();
+
+                    peer_list = new_peer_list;
+                }
+                Started => {
+                    info_hash_stuff.peers.insert(peer_id, peer);
+
+                    {
+                        let stats = info_hash_stuff.stats.clone();
+                        stats.leachers.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                        .peers
+                        .iter()
+                        .filter(|entry| {
+                            let list_peer_id = entry.peer_id;
+                            list_peer_id != peer_id
+                        })
+                        .map(|entry| entry.value().clone())
+                        .take(20 as usize) // replace 20 as NUMWANT
+                        .collect();
+
+                    peer_list = new_peer_list;
+                }
+                Completed => {
+                    info_hash_stuff.peers.insert(peer_id, peer);
+
+                    {
+                        let stats = info_hash_stuff.stats.clone();
+                        stats.leachers.fetch_sub(1, Ordering::Relaxed);
+                        stats.seeders.fetch_add(2, Ordering::Relaxed);
+                    }
+
+                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                        .peers
+                        .iter()
+                        .filter(|entry| {
+                            let list_peer_id = entry.peer_id;
+                            list_peer_id != peer_id
+                        })
+                        .map(|entry| entry.value().clone())
+                        .take(20 as usize) // replace 20 as NUMWANT
+                        .collect();
+
+                    peer_list = new_peer_list;
+                }
+                Stopped => {
+                    info_hash_stuff.peers.remove(&peer_id);
+
+                    let stats = info_hash_stuff.stats.clone();
+                    stats.leachers.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+
+            let stats = info_hash_stuff.stats.clone();
+            let leechers = stats.leachers.load(Ordering::Relaxed);
+            let seeders = stats.seeders.load(Ordering::Relaxed);
+
+            let response = UdpResponse::Announce {
+                transaction_id,
+                interval: {
+                    let dur = Duration::from_mins(2);
+                    let interval_secs: u32 = dur.as_secs().try_into().unwrap_or(u32::MAX);
+                    interval_secs.to_be_bytes()
+                },
+                leechers,
+                seeders,
+                peers: peer_list,
+            };
+
+            trace!("Sent response {:?}", response);
+
+            Ok(response)
+        }
+        _ => unimplemented!(),
+    }
+}
+
+pub fn call_gen_connection_id(app_state: &Arc<AppState>) -> u64 {
+    loop {
+        match try_gen_connection_id(app_state) {
+            Ok(id) => {
+                break id;
+            }
+            Err(_) => continue,
+        }
+    }
+}
+
+fn try_gen_connection_id(app_state: &Arc<AppState>) -> anyhow::Result<u64> {
+    let id = rand::random::<u64>();
+    match app_state.connections.contains_key(&id) {
+        false => Ok(id),
+        true => Err(anyhow::anyhow!("need to regen id")),
+    }
+}
