@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
@@ -52,6 +52,7 @@ pub struct Peer {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum UdpRequest {
     Connect {
         transaction_id: u32,
@@ -140,7 +141,18 @@ impl UdpResponse {
 
                 buf
             }
-            _ => unimplemented!(),
+            UdpResponse::Error {
+                transaction_id,
+                message,
+            } => {
+                let mut buf = Vec::with_capacity(8);
+
+                buf.extend_from_slice(&3u32.to_be_bytes());
+                buf.extend_from_slice(&transaction_id.to_be_bytes());
+                buf.extend_from_slice(message.as_bytes());
+
+                buf
+            }
         }
     }
 }

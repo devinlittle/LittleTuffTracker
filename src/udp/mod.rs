@@ -1,13 +1,13 @@
 use bytes::{Bytes, BytesMut};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 use tokio::{net::UdpSocket, time::Instant};
 use tracing::{error, info, trace};
 
-use crate::structs::{
+use crate::structs::udp::{
     AppState,
     Event::{self, *},
     InfoHash, Peer, PeerId, UdpAction, UdpResponse,
@@ -47,9 +47,14 @@ pub async fn handle_request(
     remote_socket: SocketAddr,
     app_state: &Arc<AppState>,
 ) -> anyhow::Result<UdpResponse> {
-    let Ok(action) = UdpAction::try_from(u32::from_be_bytes(buffer[8..12].try_into()?))  else {
-        // TODO: return error
-        todo!()
+    let transaction_id = u32::from_be_bytes(buffer[12..16].try_into()?);
+
+    let Ok(action) = UdpAction::try_from(u32::from_be_bytes(buffer[8..12].try_into()?)) else {
+        let response = UdpResponse::Error {
+            transaction_id,
+            message: "Message does not contain an action".to_string(),
+        };
+        return Ok(response);
     };
 
     let transaction_id = u32::from_be_bytes(buffer[12..16].try_into()?);
@@ -57,8 +62,11 @@ pub async fn handle_request(
     match action {
         UdpAction::Connect => {
             if buf_size < 16 {
-                // TODO: return error
-                todo!();
+                let response = UdpResponse::Error {
+                    transaction_id,
+                    message: "Connect action needs request to be least 16 bytes".to_string(),
+                };
+                return Ok(response);
             }
 
             let connection_id = call_gen_connection_id(app_state);
@@ -79,23 +87,39 @@ pub async fn handle_request(
         }
         UdpAction::Announce => {
             if buf_size < 20 {
-                // TODO: return error
-                todo!();
+                let response = UdpResponse::Error {
+                    transaction_id,
+                    message: "Announce action requires request to be at least 20 bytes".to_string(),
+                };
+                return Ok(response);
             }
 
-            let Ok(info_hash): Result<InfoHash, _> = buffer[16..36]
-                .try_into() else {panic!("");};
+            let Ok(info_hash): Result<InfoHash, _> = buffer[16..36].try_into() else {
+                let response = UdpResponse::Error {
+                    transaction_id,
+                    message: "InfoHash field needs to be present in request".to_string(),
+                };
+                return Ok(response);
+            };
 
-            let Ok(peer_id): Result<PeerId, _> = buffer[36..56]
-                .try_into() else {panic!("");};
+            let Ok(peer_id): Result<PeerId, _> = buffer[36..56].try_into() else {
+                let response = UdpResponse::Error {
+                    transaction_id,
+                    message: "You don't have a peer_id".to_string(),
+                };
+                return Ok(response);
+            };
 
             let downloaded = u64::from_be_bytes(buffer[56..64].try_into()?);
             let left = u64::from_be_bytes(buffer[64..72].try_into()?);
             let uploaded = u64::from_be_bytes(buffer[72..80].try_into()?);
 
             let Ok(event) = Event::try_from(u32::from_be_bytes(buffer[80..84].try_into()?)) else {
-                // TODO: error here
-                todo!();
+                let response = UdpResponse::Error {
+                    transaction_id,
+                    message: "Event Field is missing in request".to_string(),
+                };
+                return Ok(response);
             };
 
             let ip_bytes = u32::from_be_bytes(buffer[84..88].try_into()?);
@@ -106,8 +130,7 @@ pub async fn handle_request(
             };
 
             let port = u16::from_be_bytes(buffer[96..98].try_into()?);
-
-            // TODO: handle numwant
+            let numwant = u32::from_be_bytes(buffer[92..96].try_into()?);
 
             let peer = Peer {
                 peer_id,
@@ -135,7 +158,7 @@ pub async fn handle_request(
                             list_peer_id != peer_id
                         })
                         .map(|entry| entry.value().clone())
-                        .take(20 as usize) // replace 20 as NUMWANT
+                        .take(numwant as usize)
                         .collect();
 
                     peer_list = new_peer_list;
@@ -156,7 +179,7 @@ pub async fn handle_request(
                             list_peer_id != peer_id
                         })
                         .map(|entry| entry.value().clone())
-                        .take(20 as usize) // replace 20 as NUMWANT
+                        .take(numwant as usize)
                         .collect();
 
                     peer_list = new_peer_list;
@@ -178,7 +201,7 @@ pub async fn handle_request(
                             list_peer_id != peer_id
                         })
                         .map(|entry| entry.value().clone())
-                        .take(20 as usize) // replace 20 as NUMWANT
+                        .take(numwant as usize)
                         .collect();
 
                     peer_list = new_peer_list;
@@ -211,7 +234,14 @@ pub async fn handle_request(
 
             Ok(response)
         }
-        _ => unimplemented!(),
+        _ => {
+            let response = UdpResponse::Error {
+                transaction_id,
+                message: "Scraping is not implimented yet* on this tracker".to_string(),
+            };
+
+            Ok(response)
+        }
     }
 }
 

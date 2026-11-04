@@ -8,11 +8,11 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::{signal, time::sleep};
 use tracing::{error, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     env::ENV_VARS,
-    structs::{AppState, Connections, InfoHashes},
+    structs::udp::{AppState, Connections, InfoHashes},
 };
 
 mod env;
@@ -56,7 +56,9 @@ async fn main() -> Result<()> {
     let udp_app_state = Arc::clone(&app_state);
     tokio::spawn(async move {
         let Ok(ip) = ENV_VARS.host.parse::<IpAddr>() else {
-            error!("Failed to associate HOST string with IpAddress, check if HOST provided was a valid IP?");
+            error!(
+                "Failed to associate HOST string with IpAddress, check if HOST provided was a valid IP?"
+            );
             panic!("IP Parsing failed during UDP Socket Serve")
         };
         let host_on = SocketAddr::new(ip, ENV_VARS.port);
