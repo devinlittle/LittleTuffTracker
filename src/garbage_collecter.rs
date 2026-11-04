@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::{sleep, Instant};
 use tracing::{debug, trace};
 
-use crate::structs::udp::{AppState, ConnectionId};
+use crate::structs::udp::{AppState, ConnectionId, REANNOUNCE_INTERVAL};
 
 pub async fn cnnection_gargabe_collector_worker(app_state: Arc<AppState>) -> anyhow::Result<()> {
     loop {
@@ -32,7 +32,7 @@ pub async fn cnnection_gargabe_collector_worker(app_state: Arc<AppState>) -> any
         trace!("Removed stale connections");
         debug!("After: {:?}", app_state.connections);
 
-        sleep(Duration::from_secs(190)).await
+        sleep(Duration::from_secs(REANNOUNCE_INTERVAL + 30)).await
     }
 }
 
@@ -46,6 +46,6 @@ pub async fn info_hash_gargabe_collector_worker(app_state: Arc<AppState>) -> any
         trace!("Cleared out empty torrents.");
         debug!("After: {:?}", app_state.info_hashes);
 
-        sleep(Duration::from_mins(5)).await
+        sleep(Duration::from_secs(300)).await
     }
 }

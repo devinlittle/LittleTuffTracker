@@ -43,6 +43,9 @@ pub struct AppState {
     pub info_hashes: InfoHashes,
 }
 
+/// Time in seconds
+pub const REANNOUNCE_INTERVAL: u64 = 120;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Peer {
     pub peer_id: PeerId,

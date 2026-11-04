@@ -10,7 +10,7 @@ use tracing::{debug, error, info, trace};
 use crate::structs::udp::{
     AppState,
     Event::{self, *},
-    InfoHash, Peer, PeerId, UdpAction, UdpResponse,
+    InfoHash, Peer, PeerId, UdpAction, UdpResponse, REANNOUNCE_INTERVAL,
 };
 
 pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> anyhow::Result<()> {
@@ -23,7 +23,7 @@ pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> a
     info!("[UDP]: Listening on: {}", host_on);
 
     loop {
-        let mut buf_mut = BytesMut::with_capacity(2048); // or 1024
+        let mut buf_mut = BytesMut::with_capacity(1024);
 
         let (buf_size, remote_socket) = udp_socket.recv_buf_from(&mut buf_mut).await?;
 
@@ -73,7 +73,9 @@ pub async fn handle_request(
 
             app_state.connections.insert(
                 connection_id,
-                (remote_socket, { Instant::now() + Duration::from_secs(190) }),
+                (remote_socket, {
+                    Instant::now() + Duration::from_secs(REANNOUNCE_INTERVAL)
+                }),
             );
 
             let response = UdpResponse::Connect {
@@ -152,7 +154,7 @@ pub async fn handle_request(
 
                     info_hash_stuff.peers.insert(peer_id, peer);
 
-                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
                         .peers
                         .iter()
                         .filter(|entry| {
@@ -163,7 +165,7 @@ pub async fn handle_request(
                         .take(numwant as usize)
                         .collect();
 
-                    peer_list = new_peer_list;
+                    peer_list = peer_list_to_send;
                 }
                 Started => {
                     debug!("Recieved Started event, sending peer list and adding +1 to leaches");
@@ -174,7 +176,7 @@ pub async fn handle_request(
                         stats.leachers.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
                         .peers
                         .iter()
                         .filter(|entry| {
@@ -185,7 +187,7 @@ pub async fn handle_request(
                         .take(numwant as usize)
                         .collect();
 
-                    peer_list = new_peer_list;
+                    peer_list = peer_list_to_send;
                 }
                 Completed => {
                     debug!("Recieved Completed event, sending peer list and adding +1 to seeders and -1 to leaches");
@@ -198,7 +200,7 @@ pub async fn handle_request(
                         stats.seeders.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    let new_peer_list: Vec<Peer> = info_hash_stuff
+                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
                         .peers
                         .iter()
                         .filter(|entry| {
@@ -209,7 +211,7 @@ pub async fn handle_request(
                         .take(numwant as usize)
                         .collect();
 
-                    peer_list = new_peer_list;
+                    peer_list = peer_list_to_send;
                 }
                 Stopped => {
                     debug!("Recieved Stopped event, depends on what we are doing");
@@ -240,7 +242,7 @@ pub async fn handle_request(
             let response = UdpResponse::Announce {
                 transaction_id,
                 interval: {
-                    let dur = Duration::from_mins(2);
+                    let dur = Duration::from_secs(REANNOUNCE_INTERVAL);
                     let interval_secs: u32 = dur.as_secs().try_into().unwrap_or(u32::MAX);
                     interval_secs.to_be_bytes()
                 },
