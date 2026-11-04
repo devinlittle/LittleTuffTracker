@@ -1,11 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, atomic::Ordering},
+    sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 use tokio::{net::UdpSocket, time::Instant};
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 
 use crate::structs::udp::{
     AppState,
@@ -20,7 +20,7 @@ pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> a
         anyhow::anyhow!(error)
     })?;
 
-    info!("Listening UDP Tracker on: {}", host_on);
+    info!("[UDP]: Listening on: {}", host_on);
 
     loop {
         let mut buf_mut = BytesMut::with_capacity(2048); // or 1024
@@ -148,6 +148,8 @@ pub async fn handle_request(
 
             match event {
                 None => {
+                    debug!("Recieved None event, sending peer list");
+
                     info_hash_stuff.peers.insert(peer_id, peer);
 
                     let new_peer_list: Vec<Peer> = info_hash_stuff
@@ -164,6 +166,7 @@ pub async fn handle_request(
                     peer_list = new_peer_list;
                 }
                 Started => {
+                    debug!("Recieved Started event, sending peer list and adding +1 to leaches");
                     info_hash_stuff.peers.insert(peer_id, peer);
 
                     {
@@ -185,12 +188,14 @@ pub async fn handle_request(
                     peer_list = new_peer_list;
                 }
                 Completed => {
+                    debug!("Recieved Completed event, sending peer list and adding +1 to seeders and -1 to leaches");
+
                     info_hash_stuff.peers.insert(peer_id, peer);
 
                     {
                         let stats = info_hash_stuff.stats.clone();
                         stats.leachers.fetch_sub(1, Ordering::Relaxed);
-                        stats.seeders.fetch_add(2, Ordering::Relaxed);
+                        stats.seeders.fetch_add(1, Ordering::Relaxed);
                     }
 
                     let new_peer_list: Vec<Peer> = info_hash_stuff
@@ -207,10 +212,24 @@ pub async fn handle_request(
                     peer_list = new_peer_list;
                 }
                 Stopped => {
+                    debug!("Recieved Stopped event, depends on what we are doing");
+
                     info_hash_stuff.peers.remove(&peer_id);
 
-                    let stats = info_hash_stuff.stats.clone();
-                    stats.leachers.fetch_sub(1, Ordering::Relaxed);
+                    // Peer who is disconnecting wasn't seeding
+                    if peer.left > 0 {
+                        info_hash_stuff
+                            .stats
+                            .leachers
+                            .fetch_sub(1, Ordering::Relaxed);
+                        debug!("[Stopped]: removing leacher");
+                    } else {
+                        info_hash_stuff
+                            .stats
+                            .seeders
+                            .fetch_sub(1, Ordering::Relaxed);
+                        debug!("[Stopped]: removing seeder");
+                    }
                 }
             }
 

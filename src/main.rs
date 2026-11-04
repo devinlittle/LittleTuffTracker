@@ -8,7 +8,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::{signal, time::sleep};
 use tracing::{error, info};
-use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 use crate::{
     env::ENV_VARS,
@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod env;
+mod garbage_collecter;
 mod http;
 mod structs;
 mod udp;
@@ -49,20 +50,25 @@ async fn main() -> Result<()> {
     });
 
     // Garbage Collector
-    let _garbage_app_state = Arc::clone(&app_state);
-    tokio::spawn(async move {});
+    let garbage_app_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let _ =
+            garbage_collecter::cnnection_gargabe_collector_worker(garbage_app_state.clone()).await;
+        let _ =
+            garbage_collecter::info_hash_gargabe_collector_worker(garbage_app_state.clone()).await;
+    });
+
+    let Ok(ip) = ENV_VARS.host.parse::<IpAddr>() else {
+        error!(
+            "Failed to associate HOST string with IpAddress, check if HOST provided was a valid IP?"
+        );
+        panic!("IP Parsing failed during UDP Socket Serve")
+    };
+    let host_on = SocketAddr::new(ip, ENV_VARS.port);
 
     // This is the UDP Router
     let udp_app_state = Arc::clone(&app_state);
     tokio::spawn(async move {
-        let Ok(ip) = ENV_VARS.host.parse::<IpAddr>() else {
-            error!(
-                "Failed to associate HOST string with IpAddress, check if HOST provided was a valid IP?"
-            );
-            panic!("IP Parsing failed during UDP Socket Serve")
-        };
-        let host_on = SocketAddr::new(ip, ENV_VARS.port);
-
         let _ = udp::start_utp_serve(host_on, udp_app_state).await;
     });
 

@@ -26,7 +26,8 @@ rand = "0.10.3"
 dotenvy = "0.15.7"
 toml = "1.1.8"
 
-dashmap = "6.2.1"
+dashmap = {version = "6.2.1", features = ["rayon"] }
+rayon = "1.12.0"
 
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.23", features = ["env-filter", "json"] }

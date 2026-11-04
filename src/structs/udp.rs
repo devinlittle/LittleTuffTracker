@@ -10,7 +10,10 @@ use tokio::time::Instant;
 pub type InfoHash = [u8; 20];
 pub type PeerId = [u8; 20];
 
-pub type Connections = DashMap<u64, (SocketAddr, Instant)>;
+pub type ConnectionId = u64;
+pub type TransactionId = u32;
+
+pub type Connections = DashMap<ConnectionId, (SocketAddr, Instant)>;
 pub type InfoHashes = DashMap<InfoHash, TorrentInfo>;
 
 #[derive(Debug, Clone, Default)]
@@ -58,8 +61,8 @@ pub enum UdpRequest {
         transaction_id: u32,
     },
     Announce {
-        connection_id: u64,
-        transaction_id: u32,
+        connection_id: ConnectionId,
+        transaction_id: TransactionId,
         info_hash: InfoHash,
         peer_id: PeerId,
         downloaded: u64,
@@ -72,8 +75,8 @@ pub enum UdpRequest {
         port: u16,
     },
     Scrape {
-        connection_id: u64,
-        transaction_id: u32,
+        connection_id: ConnectionId,
+        transaction_id: TransactionId,
         info_hashes: Vec<InfoHash>,
     },
 }
@@ -81,18 +84,18 @@ pub enum UdpRequest {
 #[derive(Debug)]
 pub enum UdpResponse {
     Connect {
-        transaction_id: u32,
-        connection_id: u64,
+        transaction_id: TransactionId,
+        connection_id: ConnectionId,
     },
     Announce {
-        transaction_id: u32,
+        transaction_id: TransactionId,
         interval: [u8; 4],
         leechers: u32,
         seeders: u32,
         peers: Vec<Peer>,
     },
     Error {
-        transaction_id: u32,
+        transaction_id: TransactionId,
         message: String,
     },
 }
