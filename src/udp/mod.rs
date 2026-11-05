@@ -8,9 +8,7 @@ use tokio::{net::UdpSocket, time::Instant};
 use tracing::{debug, error, info, trace};
 
 use crate::structs::udp::{
-    AppState,
-    Event::{self, *},
-    InfoHash, Peer, PeerId, UdpAction, UdpResponse, REANNOUNCE_INTERVAL,
+    AppState, Event, InfoHash, Peer, PeerId, UdpAction, UdpResponse, REANNOUNCE_INTERVAL,
 };
 
 pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> anyhow::Result<()> {
@@ -104,6 +102,12 @@ pub async fn handle_request(
                 return Ok(response);
             };
 
+            let connection_id = u64::from_be_bytes(buffer[0..8].try_into()?);
+
+            if let Some(mut entry) = app_state.connections.get_mut(&connection_id) {
+                entry.value_mut().1 = Instant::now() + Duration::from_secs(REANNOUNCE_INTERVAL * 2);
+            }
+
             let Ok(peer_id): Result<PeerId, _> = buffer[36..56].try_into() else {
                 let response = UdpResponse::Error {
                     transaction_id,
@@ -145,97 +149,62 @@ pub async fn handle_request(
             };
 
             let info_hash_stuff = app_state.info_hashes.entry(info_hash).or_default();
+            let stats = &info_hash_stuff.stats;
 
             let mut peer_list: Vec<Peer> = Vec::new();
 
-            match event {
-                None => {
-                    debug!("Recieved None event, sending peer list");
+            if matches!(event, Event::Stopped) {
+                debug!("Recieved Stopped event, removing peer");
 
-                    info_hash_stuff.peers.insert(peer_id, peer);
-
-                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
-                        .peers
-                        .iter()
-                        .filter(|entry| {
-                            let list_peer_id = entry.peer_id;
-                            list_peer_id != peer_id
-                        })
-                        .map(|entry| entry.value().clone())
-                        .take(numwant as usize)
-                        .collect();
-
-                    peer_list = peer_list_to_send;
-                }
-                Started => {
-                    debug!("Recieved Started event, sending peer list and adding +1 to leaches");
-                    info_hash_stuff.peers.insert(peer_id, peer);
-
-                    {
-                        let stats = info_hash_stuff.stats.clone();
-                        stats.leachers.fetch_add(1, Ordering::Relaxed);
+                if let Some((_peer_id, old_peer)) = info_hash_stuff.peers.remove(&peer_id) {
+                    if old_peer.left == 0 {
+                        stats.seeders.fetch_sub(1, Ordering::Relaxed);
+                        debug!("[Stopped]: removed seeder");
+                    } else {
+                        stats.leachers.fetch_sub(1, Ordering::Relaxed);
+                        debug!("[Stopped]: removed leecher");
                     }
-
-                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
-                        .peers
-                        .iter()
-                        .filter(|entry| {
-                            let list_peer_id = entry.peer_id;
-                            list_peer_id != peer_id
-                        })
-                        .map(|entry| entry.value().clone())
-                        .take(numwant as usize)
-                        .collect();
-
-                    peer_list = peer_list_to_send;
                 }
-                Completed => {
-                    debug!("Recieved Completed event, sending peer list and adding +1 to seeders and -1 to leaches");
+            } else {
+                let old_peer = info_hash_stuff.peers.insert(peer_id, peer.clone());
 
-                    info_hash_stuff.peers.insert(peer_id, peer);
+                let was_seeder = old_peer.as_ref().is_some_and(|p| p.left == 0);
+                let was_leecher = old_peer.as_ref().is_some_and(|p| p.left > 0);
+                let is_seeder = peer.left == 0;
+                let is_leecher = peer.left > 0;
 
-                    {
-                        let stats = info_hash_stuff.stats.clone();
+                if old_peer.is_none() {
+                    // brand new peer appearing
+
+                    if is_seeder {
+                        stats.seeders.fetch_add(1, Ordering::Relaxed);
+                        debug!("[Announce]: Registered new seeder");
+                    } else {
+                        stats.leachers.fetch_add(1, Ordering::Relaxed);
+                        debug!("[Announce]: Registered new leecher");
+                    }
+                } else {
+                    // an existing peer updating stats
+                    if was_leecher && is_seeder {
                         stats.leachers.fetch_sub(1, Ordering::Relaxed);
                         stats.seeders.fetch_add(1, Ordering::Relaxed);
-                    }
-
-                    let peer_list_to_send: Vec<Peer> = info_hash_stuff
-                        .peers
-                        .iter()
-                        .filter(|entry| {
-                            let list_peer_id = entry.peer_id;
-                            list_peer_id != peer_id
-                        })
-                        .map(|entry| entry.value().clone())
-                        .take(numwant as usize)
-                        .collect();
-
-                    peer_list = peer_list_to_send;
-                }
-                Stopped => {
-                    debug!("Recieved Stopped event, depends on what we are doing");
-
-                    info_hash_stuff.peers.remove(&peer_id);
-
-                    // Peer who is disconnecting wasn't seeding
-                    if peer.left > 0 {
-                        info_hash_stuff
-                            .stats
-                            .leachers
-                            .fetch_sub(1, Ordering::Relaxed);
-                        debug!("[Stopped]: removing leacher");
-                    } else {
-                        info_hash_stuff
-                            .stats
-                            .seeders
-                            .fetch_sub(1, Ordering::Relaxed);
-                        debug!("[Stopped]: removing seeder");
+                        debug!("[Announce]: Peer completed download, transitioned to seeder");
+                    } else if was_seeder && is_leecher {
+                        stats.seeders.fetch_sub(1, Ordering::Relaxed);
+                        stats.leachers.fetch_add(1, Ordering::Relaxed);
+                        debug!("[Announce]: Peer became leecher");
                     }
                 }
+
+                peer_list = info_hash_stuff
+                    .peers
+                    .iter()
+                    .filter(|entry| *entry.key() != peer_id)
+                    .map(|entry| entry.value().clone())
+                    .take(numwant as usize)
+                    .collect();
             }
 
-            let stats = info_hash_stuff.stats.clone();
             let leechers = stats.leachers.load(Ordering::Relaxed);
             let seeders = stats.seeders.load(Ordering::Relaxed);
 
