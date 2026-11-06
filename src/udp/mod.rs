@@ -25,13 +25,20 @@ pub async fn start_utp_serve(host_on: SocketAddr, app_state: Arc<AppState>) -> a
 
         let (buf_size, remote_socket) = udp_socket.recv_buf_from(&mut buf_mut).await?;
 
-        let response = handle_request(
+        let response = match handle_request(
             buf_mut.clone().freeze(),
             buf_size,
             remote_socket,
             &app_state,
         )
-        .await?;
+        .await
+        {
+            Ok(response) => response,
+            Err(_) => UdpResponse::Error {
+                transaction_id: 0,
+                message: "Fatal Error when communicating to tracker".to_string(),
+            },
+        };
 
         buf_mut.clear();
         buf_mut.extend_from_slice(&response.to_bytes());
@@ -45,7 +52,15 @@ pub async fn handle_request(
     remote_socket: SocketAddr,
     app_state: &Arc<AppState>,
 ) -> anyhow::Result<UdpResponse> {
-    let transaction_id = u32::from_be_bytes(buffer[12..16].try_into()?);
+    let Some(transaction_bytes) = buffer.get(12..16) else {
+         let response = UdpResponse::Error {
+            transaction_id: 0,
+            message: "Message does not contain a transaction id".to_string(),
+        };
+        return Ok(response);
+    };
+
+    let transaction_id = u32::from_be_bytes(transaction_bytes.try_into()?);
 
     let Ok(action) = UdpAction::try_from(u32::from_be_bytes(buffer[8..12].try_into()?)) else {
         let response = UdpResponse::Error {
